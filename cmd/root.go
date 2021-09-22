@@ -29,7 +29,7 @@ var yamlExample = []byte(`
 Targets:
   - Name: HighAvailableTarget
     Type: HighAvailablePair
-    Hosts:
+    Nodes:
       - Name: dummy-vpx-001
         Address: 169.254.254.254
       - Name: dummy-vpx-002
@@ -41,17 +41,16 @@ Targets:
     BackupLevel: full
   - Name: StandaloneTarget
     Type: Standalone
-    Hosts:
+    Nodes:
       - Name: dummy-vpx-001
         Address: dummy-vpx-001
     UseSsl: false
     ValidateCertificate: false
     Username: nsroot
     Password: nsroot
-General:
-  OutputBasePath: /var/citrixadc/backup,
-  FolderPerTarget: true,
-  TimeStampMode: Prepend
+OutputBasePath: /var/citrixadc/backup
+FolderPerTarget: true
+TimeStampMode: Prepend
 `)
 
 // rootCmd represents the base command when called without any subcommands
@@ -113,7 +112,7 @@ func verifyLoading() {
 			viper.SafeWriteConfig()
 		} else {
 			// Config file was found but another error was produced
-			fmt.Println("Could not find specified file, generating default file at specified locations")
+			fmt.Println("Could not find specified file, generating default file at specified location.")
 			viper.ReadConfig(bytes.NewBuffer(yamlExample))
 			viper.SafeWriteConfigAs(cfgFile)
 		}

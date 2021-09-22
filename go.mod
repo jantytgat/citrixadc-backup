@@ -3,6 +3,7 @@ module github.com/jantytgat/citrixadc-backup
 go 1.17
 
 require (
+	github.com/citrix/adc-nitro-go v0.0.0-20210906082353-a57db5c1f504
 	github.com/spf13/cobra v1.2.1
 	github.com/spf13/viper v1.9.0
 )
