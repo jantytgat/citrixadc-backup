@@ -15,8 +15,14 @@ limitations under the License.
 */
 package main
 
-import "github.com/jantytgat/citrixadc-backup/cmd"
+import (
+	"fmt"
+	"github.com/jantytgat/citrixadc-backup/cmd"
+)
+
+var banner = "   ___ _ _       _         _   ___   ___   ___          _             \n  / __(_) |_ _ _(_)_ __   /_\\ |   \\ / __| | _ ) __ _ __| |___  _ _ __ \n | (__| |  _| '_| \\ \\ /  / _ \\| |) | (__  | _ \\/ _` / _| / / || | '_ \\\n  \\___|_|\\__|_| |_/_\\_\\ /_/ \\_\\___/ \\___| |___/\\__,_\\__|_\\_\\\\_,_| .__/\n                                                                |_|   "
 
 func main() {
+	fmt.Println(banner)
 	cmd.Execute()
 }

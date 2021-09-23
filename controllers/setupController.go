@@ -1,96 +1,248 @@
 package controllers
 
 import (
+	"bufio"
 	"fmt"
-	"github.com/citrix/adc-nitro-go/resource/config/ha"
-	"github.com/citrix/adc-nitro-go/resource/config/system"
+	"github.com/citrix/adc-nitro-go/service"
+	"github.com/jantytgat/citrixadc-backup/data"
 	"github.com/jantytgat/citrixadc-backup/models"
 	"github.com/spf13/viper"
+	"golang.org/x/term"
+	"log"
+	"os"
+	"strings"
 	"sync"
 )
 
-var temaplteHaNode = ha.Hanode{
-	Id: 0,
+type SetupController struct{}
+
+type SetupControllerCaller interface {
+	ExecuteInstall()
+	ExecuteUninstall()
 }
 
-var templateCmdPolicy = system.Systemcmdpolicy{
-	Policyname: "",
-	Action:     "ALLOW",
-	Cmdspec:    "(^(show\\s+ha\\+node.*))|(^(show\\s+system\\s+backup)|^(create|rm)\\s+system\\s+backup\\s+.*)|(^show\\ssystem\\sfile\\s[\\w\\.-]+\\s-fileLocation\\s\"/var/ns_sys_backup\")",
+func (s *SetupController) ExecuteInstall() {
+	var wg sync.WaitGroup
+	for _, t := range s.getSetupTargets() {
+		wg.Add(1)
+		go s.runInstallCommands(t, &wg)
+	}
+	wg.Wait()
 }
 
-var templateCmdUser = system.Systemuser{
-	Username:                       "",
-	Password:                       "",
-	Externalauth:                   "false",
-	Timeout:                        60,
+func (s *SetupController) ExecuteUninstall() {
+	var wg sync.WaitGroup
+	for _, t := range s.getSetupTargets() {
+		wg.Add(1)
+		go s.runUninstallCommands(t, &wg)
+	}
+	wg.Wait()
 }
 
-var templateCmdUserBinding = system.Systemusercmdpolicybinding{
-	Policyname: "",
-	Priority:   100,
-	Username:   "",
-}
+func (s *SetupController) getSetupTargets() []models.SetupTarget {
+	var config models.BackupConfiguration
+	var setupTargets []models.SetupTarget
 
-var config models.BackupConfiguration
-
-func SetupTarget() {
 	err := viper.Unmarshal(&config)
 	if err != nil {
 		panic(err)
 	}
 
-	var wg sync.WaitGroup
-
 	for _, t := range config.Targets {
-		wg.Add(1)
-		go runCommands(t, &wg)
-	}
-	wg.Wait()
-}
-
-func runCommands(target models.BackupTarget, wg *sync.WaitGroup) {
-	if target.Type == "HighAvailablePair" {
-		fmt.Println("Detecting primary node for", target.Name)
-		for _, node := range target.Nodes {
-			go detectHaState(node, wg)
+		fmt.Printf("Configuring target: %s\n", t.Name)
+		setupTarget := models.SetupTarget{
+			Target:        t,
+			Username:      s.getUsernameFromStdin(),
+			Password:      s.getPasswordFromStdin(),
+			CmdPolicyName: s.getCmdPolicyNameFromStdin(),
 		}
+		setupTargets = append(setupTargets, setupTarget)
 	}
-	fmt.Println("Executing commands for", target.Name)
-	for _, node := range target.Nodes {
-		createCmdPolicy(target.Name, target.Username, target.Password, target.UseSsl, target.ValidateCertificate, node)
-		createUser(target.Name, target.Username, target.Password, target.UseSsl, target.ValidateCertificate, node)
-		bindCmdPolicy(target.Name, target.Username, target.Password, target.UseSsl, target.ValidateCertificate, node)
+	return setupTargets
+}
+
+func (s *SetupController) getUsernameFromStdin() string {
+	fmt.Print("Username: ")
+	reader := bufio.NewReader(os.Stdin)
+	username, _ := reader.ReadString('\n')
+	// convert CRLF to LF
+	// TODO - WINDOWS CRLF
+	username = strings.Replace(username, "\r\n", "", -1)
+	username = strings.Replace(username, "\n", "", -1)
+	return username
+}
+
+func (s *SetupController) getPasswordFromStdin() string {
+	fmt.Print("Password: ")
+	// https://pkg.go.dev/golang.org/x/term
+	// terminal.ReadPassword accepts file descriptor as argument, returns byte slice and error.
+	password, e := term.ReadPassword(int(os.Stdin.Fd()))
+	if e != nil {
+		log.Fatal(e)
 	}
+	fmt.Println()
+	// Type cast byte slice to string.
+	// TODO - WINDOWS CRLF
+	output := strings.Replace(string(password), "\r\n", "", -1)
+	return output
+}
+
+func (s *SetupController) getCmdPolicyNameFromStdin() string {
+	fmt.Print("Policy Name [leave empty for default value: CMD_CITRIXADCBACKUP]: ")
+	reader := bufio.NewReader(os.Stdin)
+	policyName, _ := reader.ReadString('\n')
+	// convert CRLF to LF
+	// TODO - WINDOWS CRLF
+	policyName = strings.Replace(policyName, "\r\n", "", -1)
+	policyName = strings.Replace(policyName, "\n", "", -1)
+	if policyName == "" {
+		policyName = "CMD_CITRIXADCBACKUP"
+	}
+	return policyName
+}
+
+func (s *SetupController) createSetupNitroClientsForNodes(t models.SetupTarget) (map[string]service.NitroClient, error) {
+	nitroClient := make(map[string]service.NitroClient, len(t.Target.Nodes))
+	var err error
+	for _, n := range t.Target.Nodes {
+		client, err := service.NewNitroClientFromParams(
+			service.NitroParams{
+				Url:       n.Address,
+				Username:  t.Username,
+				Password:  t.Password,
+				SslVerify: t.Target.ValidateCertificate,
+			})
+		if err != nil {
+			log.Fatal("Could not create client for target ", t.Target.Name, " node ", n.Name)
+		}
+
+		nitroClient[n.Name] = *client
+	}
+	return nitroClient, err
+}
+
+func (s *SetupController) runInstallCommands(t models.SetupTarget, wg *sync.WaitGroup) {
+	var sharedController = SharedController{}
+	var primaryNode models.BackupNode
+	var err error
+	var clients = make(map[string]service.NitroClient, len(t.Target.Nodes))
+
+	clients, err = s.createSetupNitroClientsForNodes(t)
+	if err != nil {
+		log.Fatal("Error creating nitro clients")
+		wg.Done()
+		return
+	}
+
+	primaryNode, err = sharedController.GetPrimaryNode(clients, t.Target)
+	if err != nil {
+		wg.Done()
+		return
+	}
+	fmt.Println("Executing commands for", t.Target.Name, "on", primaryNode.Name)
+
+	err = s.createCmdPolicy(clients[primaryNode.Name], t.CmdPolicyName)
+	if err != nil {
+		fmt.Println(err)
+		wg.Done()
+		return
+	}
+
+	err = s.createUser(clients[primaryNode.Name], t.Target.Username, t.Target.Password)
+	if err != nil {
+		wg.Done()
+		return
+	}
+
+	err = s.bindCmdPolicy(clients[primaryNode.Name], t.Target.Username, t.CmdPolicyName)
+	if err != nil {
+		wg.Done()
+		return
+	}
+
+	err = s.saveConfig(clients[primaryNode.Name])
 	wg.Done()
 }
 
-func detectHaState(node models.BackupNode, wg *sync.WaitGroup) {
-	wg.Add(1)
-	fmt.Println("Detecting node state for", node.Name)
+func (s *SetupController) runUninstallCommands(t models.SetupTarget, wg *sync.WaitGroup) {
+	var sharedController = SharedController{}
+	var primaryNode models.BackupNode
+	var err error
+	var nitroClient = make(map[string]service.NitroClient, len(t.Target.Nodes))
+
+	nitroClient, err = s.createSetupNitroClientsForNodes(t)
+	if err != nil {
+		log.Fatal("Error creating nitro clients")
+		wg.Done()
+		return
+	}
+
+	primaryNode, err = sharedController.GetPrimaryNode(nitroClient, t.Target)
+	if err != nil {
+		wg.Done()
+		return
+	}
+	fmt.Println("Executing commands for", t.Target.Name, "on", primaryNode.Name)
+
+	err = s.deleteUser(nitroClient[primaryNode.Name], t.Target.Username)
+	if err != nil {
+		wg.Done()
+		return
+	}
+
+	err = s.deleteCmdPolicy(nitroClient[primaryNode.Name], t.CmdPolicyName)
+	if err != nil {
+		wg.Done()
+		return
+	}
+
+	err = s.saveConfig(nitroClient[primaryNode.Name])
 	wg.Done()
 }
 
-
-func createCmdPolicy(target string, username string, password string, useSsl bool, validateCertificate bool, node models.BackupNode) {
-	fmt.Println("Creating command policy for", target, node.Address)
-	request := templateCmdPolicy
-	request.Policyname = "CMD_BACKUP_" + target
-	fmt.Println(request)
+func (s *SetupController) createCmdPolicy(c service.NitroClient, name string) error {
+	fmt.Println("Creating system command policy")
+	request := data.GetSystemCmdPolicyCreateData(name)
+	response, err := c.AddResource(service.Systemcmdpolicy.Type(), name, request)
+	if err == nil {
+		fmt.Println(response)
+	}
+	return err
 }
 
-func createUser(target string, username string, password string, useSsl bool, validateCertificate bool, node models.BackupNode) {
-	fmt.Println("Creating system user for", target, node.Name)
-	request := templateCmdUser
-	request.Username = username
-	request.Password = password
-	fmt.Println(request)
+func (s *SetupController) createUser(c service.NitroClient, username string, password string) error {
+	fmt.Println("Creating system user")
+	request := data.GetSystemUserCreateData(username, password)
+	response, err := c.AddResource(service.Systemuser.Type(), username, request)
+	if err == nil {
+		fmt.Println(response)
+	}
+	return err
 }
 
-func bindCmdPolicy(target string, username string, password string, useSsl bool, validateCertificate bool, node models.BackupNode) {
-	fmt.Println("Binding command policy to user for", target, node.Name)
-	request := templateCmdUserBinding
-	request.Policyname = "CMD_BACKUP_" + target
-	request.Username = username
-	fmt.Println(request)
+func (s *SetupController) bindCmdPolicy(c service.NitroClient, username string, policyName string) error {
+	fmt.Println("Binding command policy to user")
+	request := data.GetSystemCmdPolicyBindingCreateData(policyName, username)
+	response, err := c.AddResource(service.Systemuser_binding.Type(), username, request)
+	if err == nil {
+		fmt.Println(response)
+	}
+	return err
+}
+
+func (s *SetupController) deleteUser(c service.NitroClient, username string) error {
+	fmt.Println("Deleting system user")
+	err := c.DeleteResource(service.Systemuser.Type(), username)
+	return err
+}
+
+func (s *SetupController) deleteCmdPolicy(c service.NitroClient, policyName string) error {
+	fmt.Println("Deleting system command policy")
+	err := c.DeleteResource(service.Systemcmdpolicy.Type(), policyName)
+	return err
+}
+
+func (s *SetupController) saveConfig(c service.NitroClient) error {
+	sharedController := SharedController{}
+	return sharedController.SaveConfig(c)
 }

@@ -28,29 +28,27 @@ var cfgFile string
 var yamlExample = []byte(`
 Targets:
   - Name: HighAvailableTarget
-    Type: HighAvailablePair
-    Nodes:
-      - Name: dummy-vpx-001
-        Address: 169.254.254.254
-      - Name: dummy-vpx-002
-        Address: dummy-vpx-002.domain.local
-    UseSsl: false
-    ValidateCertificate: false
+    Type: hapair
     Username: nsroot
     Password: nsroot
-    BackupLevel: full
+    Level: full
+    ValidateCertificate: false
+    Nodes:
+      - name: dummy-vpx-001
+        address: http://169.254.254.254
+      - name: dummy-vpx-002
+        address: https://dummy-vpx-002.domain.local
   - Name: StandaloneTarget
-    Type: Standalone
-    Nodes:
-      - Name: dummy-vpx-001
-        Address: dummy-vpx-001
-    UseSsl: false
-    ValidateCertificate: false
+    Type: standalone
     Username: nsroot
     Password: nsroot
-OutputBasePath: /var/citrixadc/backup
-FolderPerTarget: true
-TimeStampMode: Prepend
+    ValidateCertificate: false
+    Nodes:
+      - name: dummy-vpx-001
+        address: http://dummy-vpx-001
+Settings:
+  OutputBasePath: /var/citrixadc/backup
+  FolderPerTarget: true
 `)
 
 // rootCmd represents the base command when called without any subcommands
