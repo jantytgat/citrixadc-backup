@@ -19,8 +19,6 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/spf13/cobra"
-	"os"
-
 	"github.com/spf13/viper"
 )
 
@@ -51,6 +49,20 @@ Settings:
   FolderPerTarget: true
 `)
 
+var yamlExampleEmpty = []byte(`
+Targets:
+Settings:
+  OutputBasePath: /var/citrixadc/backup
+  FolderPerTarget: true
+`)
+
+var yamlExampleEmpty2 = []byte(`
+Targets:
+Settings:
+  OutputBasePath:
+  FolderPerTarget:
+Schedule:`)
+
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
 	Use:   "citrixadc-backup",
@@ -74,7 +86,7 @@ func init() {
 	// Cobra supports persistent flags, which, if defined here,
 	// will be global for your application.
 
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.citrixadc-backup.yaml)")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "citrixadc-backup.yaml", "config file (default is $PWD/citrixadc-backup.yaml)")
 	// Cobra also supports local flags, which will only run
 	// when this action is called directly.
 	//rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
@@ -82,37 +94,17 @@ func init() {
 
 // initConfig reads in config file and ENV variables if set.
 func initConfig() {
-	if cfgFile != "" {
-		// Use config file from the flag.
-		viper.SetConfigFile(cfgFile)
-		viper.SetConfigType("yaml")
-	} else {
-		// Find home directory.
-		home, err := os.UserHomeDir()
-		cobra.CheckErr(err)
+	viper.SetConfigFile(cfgFile)
+	viper.SetConfigType("yaml")
 
-		// Search config in home directory with name ".citrixadc-backup" (without extension).
-		viper.AddConfigPath(home)
-		viper.SetConfigType("yaml")
-		viper.SetConfigName(".citrixadc-backup")
-	}
-
-	// If a config file is found, read it in.
 	verifyLoading()
 }
 
 func verifyLoading() {
 	if err := viper.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			// Config file not found; ignore error if desired
-			fmt.Println("Could not find config file, generating default file.")
-			viper.ReadConfig(bytes.NewBuffer(yamlExample))
-			viper.SafeWriteConfig()
-		} else {
-			// Config file was found but another error was produced
-			fmt.Println("Could not find specified file, generating default file at specified location.")
-			viper.ReadConfig(bytes.NewBuffer(yamlExample))
-			viper.SafeWriteConfigAs(cfgFile)
-		}
+		// Config file was found but another error was produced
+		fmt.Println("Could not find specified file, generating default file at specified location.")
+		viper.ReadConfig(bytes.NewBuffer(yamlExampleEmpty2))
+		viper.SafeWriteConfigAs(cfgFile)
 	}
 }

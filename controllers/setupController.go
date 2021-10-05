@@ -66,7 +66,6 @@ func (s *SetupController) getUsernameFromStdin() string {
 	reader := bufio.NewReader(os.Stdin)
 	username, _ := reader.ReadString('\n')
 	// convert CRLF to LF
-	// TODO - WINDOWS CRLF
 	username = strings.Replace(username, "\r\n", "", -1)
 	username = strings.Replace(username, "\n", "", -1)
 	return username
@@ -82,7 +81,6 @@ func (s *SetupController) getPasswordFromStdin() string {
 	}
 	fmt.Println()
 	// Type cast byte slice to string.
-	// TODO - WINDOWS CRLF
 	output := strings.Replace(string(password), "\r\n", "", -1)
 	return output
 }
@@ -92,7 +90,6 @@ func (s *SetupController) getCmdPolicyNameFromStdin() string {
 	reader := bufio.NewReader(os.Stdin)
 	policyName, _ := reader.ReadString('\n')
 	// convert CRLF to LF
-	// TODO - WINDOWS CRLF
 	policyName = strings.Replace(policyName, "\r\n", "", -1)
 	policyName = strings.Replace(policyName, "\n", "", -1)
 	if policyName == "" {

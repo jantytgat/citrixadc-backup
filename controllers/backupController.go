@@ -11,6 +11,8 @@ import (
 	"io/ioutil"
 	"log"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +27,11 @@ func (b *BackupController) ExecuteBackup() {
 	c, err := b.getBackupConfiguration()
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	err = b.createDirectory(c.Settings.OutputBasePath)
+	if err != nil {
+		log.Fatal("Access denied to ", c.Settings.OutputBasePath)
 	}
 
 	var wg sync.WaitGroup
@@ -60,7 +67,6 @@ func (b *BackupController) runBackupCommands(t models.BackupTarget, s models.Bac
 		wg.Done()
 		return
 	}
-	fmt.Println("Executing commands for", t.Name, "on", primaryNode.Name)
 
 	timestamp := b.getTimestamp()
 	err = b.createSystemBackup(nitroClient[primaryNode.Name], timestamp, t.Level)
@@ -69,44 +75,29 @@ func (b *BackupController) runBackupCommands(t models.BackupTarget, s models.Bac
 		return
 	}
 
-	var f string
-	f, err = b.downloadSystemBackup(nitroClient[primaryNode.Name], timestamp+".tgz")
-	if err != nil {
-		wg.Done()
-		return
-	}
+	for _, n := range t.Nodes {
+		var f string
+		f, err = b.downloadSystemBackup(nitroClient[n.Name], timestamp+".tgz")
+		if err != nil {
+			fmt.Println(err)
+			wg.Done()
+			return
+		}
 
-	err = b.writeFileToDisk(b.generateFilename(timestamp, t.Name, primaryNode.Name), f, s)
-	if err != nil {
-		fmt.Println(err)
-		wg.Done()
-		return
-	}
+		err = b.writeFileToDisk(b.generateFilename(timestamp, t.Name, n.Name), t.Name, f, s)
+		if err != nil {
+			fmt.Println(err)
+			wg.Done()
+			return
+		}
 
-	if t.Type != "standalone" {
-		for _, n := range t.Nodes {
-			if n.Name != primaryNode.Name {
-				f, err = b.downloadSystemBackup(nitroClient[n.Name], timestamp+".tgz")
-				if err != nil {
-					wg.Done()
-					return
-				}
-
-				err = b.writeFileToDisk(b.generateFilename(timestamp, t.Name, primaryNode.Name), f, s)
-				if err != nil {
-					fmt.Println(err)
-					wg.Done()
-					return
-				}
-			}
+		err = b.deleteSystemBackup(nitroClient[n.Name], timestamp+".tgz")
+		if err != nil {
+			wg.Done()
+			return
 		}
 	}
 
-	err = b.deleteSystemBackup(nitroClient[primaryNode.Name], timestamp+".tgz")
-	if err != nil {
-		wg.Done()
-		return
-	}
 	wg.Done()
 }
 
@@ -170,7 +161,32 @@ func (b *BackupController) downloadSystemBackup(c service.NitroClient, name stri
 	return output, err
 }
 
-func (b *BackupController) writeFileToDisk(filename string, data string, settings models.BackupSettings) error {
+func (b *BackupController) createDirectory(path string) error {
+	src, err := os.Stat(path)
+
+	if os.IsNotExist(err) {
+		return os.MkdirAll(path, 0755)
+	} else if src.Mode().IsRegular() {
+		return os.ErrExist
+	} else {
+		return nil
+	}
+}
+
+func (b *BackupController) writeFileToDisk(filename string, targetName string, data string, settings models.BackupSettings) error {
+	var outputFile string
+
+	if settings.FolderPerTarget {
+		err := b.createDirectory(filepath.Join(settings.OutputBasePath, targetName))
+		if err != nil {
+			return err
+		}
+		outputFile = filepath.Join(settings.OutputBasePath, targetName, filename)
+	} else {
+		outputFile = filepath.Join(settings.OutputBasePath, filename)
+	}
+
+	fmt.Println("Writing to file", outputFile)
 	reader := base64.NewDecoder(base64.StdEncoding, strings.NewReader(data))
 	buffer := bytes.Buffer{}
 
@@ -179,7 +195,7 @@ func (b *BackupController) writeFileToDisk(filename string, data string, setting
 		return err
 	}
 
-	err = ioutil.WriteFile(filename, buffer.Bytes(), 0644)
+	err = ioutil.WriteFile(outputFile, buffer.Bytes(), 0644)
 	return err
 }
 
@@ -188,7 +204,7 @@ func (b *BackupController) generateFilename(timestamp string, target string, nod
 
 	output = append(output, timestamp)
 	output = append(output, target)
-	output = append(output, node + ".tgz")
+	output = append(output, node+".tgz")
 
 	return strings.Join(output, "_")
 }
