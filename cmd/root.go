@@ -16,13 +16,17 @@ limitations under the License.
 package cmd
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"github.com/jantytgat/citrixadc-backup/models"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"os"
+	"strings"
 )
 
-var cfgFile string
+var configFile string
 var yamlExample = []byte(`
 Targets:
   - Name: HighAvailableTarget
@@ -49,19 +53,13 @@ Settings:
   FolderPerTarget: true
 `)
 
-var yamlExampleEmpty = []byte(`
-Targets:
-Settings:
-  OutputBasePath: /var/citrixadc/backup
-  FolderPerTarget: true
-`)
-
-var yamlExampleEmpty2 = []byte(`
+var yamlTemplate = []byte(`
 Targets:
 Settings:
   OutputBasePath:
   FolderPerTarget:
-Schedule:`)
+  Interval: 6
+`)
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
@@ -86,7 +84,7 @@ func init() {
 	// Cobra supports persistent flags, which, if defined here,
 	// will be global for your application.
 
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "citrixadc-backup.yaml", "config file (default is $PWD/citrixadc-backup.yaml)")
+	rootCmd.PersistentFlags().StringVar(&configFile, "config", "citrixadc-backup.yaml", "config file (default is $PWD/citrixadc-backup.yaml)")
 	// Cobra also supports local flags, which will only run
 	// when this action is called directly.
 	//rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
@@ -94,7 +92,7 @@ func init() {
 
 // initConfig reads in config file and ENV variables if set.
 func initConfig() {
-	viper.SetConfigFile(cfgFile)
+	viper.SetConfigFile(configFile)
 	viper.SetConfigType("yaml")
 
 	verifyLoading()
@@ -103,8 +101,27 @@ func initConfig() {
 func verifyLoading() {
 	if err := viper.ReadInConfig(); err != nil {
 		// Config file was found but another error was produced
-		fmt.Println("Could not find specified file, generating default file at specified location.")
-		viper.ReadConfig(bytes.NewBuffer(yamlExampleEmpty2))
-		viper.SafeWriteConfigAs(cfgFile)
+		fmt.Printf("Could not find %s, generate empty configuration at specified location? [y/n]: ", configFile)
+
+		reader := bufio.NewReader(os.Stdin)
+		generateFile, _ := reader.ReadString('\n')
+		// convert CRLF to LF
+		generateFile = strings.Replace(generateFile, "\r\n", "", -1)
+		generateFile = strings.Replace(generateFile, "\n", "", -1)
+
+		if generateFile == "y" {
+			viper.ReadConfig(bytes.NewBuffer(yamlTemplate))
+			viper.SafeWriteConfigAs(configFile)
+		} else {
+			os.Exit(0)
+		}
 	}
 }
+
+func getBackupConfiguration() (models.BackupConfiguration, error) {
+	var config models.BackupConfiguration
+	err := viper.Unmarshal(&config)
+
+	return config, err
+}
+

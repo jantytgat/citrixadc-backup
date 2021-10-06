@@ -1,5 +1,5 @@
 /*
-Copyright © 2021 NAME HERE <EMAIL ADDRESS>
+Copyright © 2021 Jan Tytgat
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ package cmd
 import (
 	"github.com/jantytgat/citrixadc-backup/controllers"
 	"github.com/spf13/cobra"
+	"log"
 )
 
 // uninstallCmd represents the uninstall command
@@ -36,8 +37,13 @@ var uninstallCmd = &cobra.Command{
 }
 
 func runUninstall() {
-	s := controllers.SetupController{}
-	s.ExecuteUninstall()
+	s, err := getBackupConfiguration()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	c := controllers.SetupController{}
+	c.RunUninstall(s)
 }
 
 func init() {

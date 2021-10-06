@@ -7,7 +7,6 @@ import (
 	"github.com/citrix/adc-nitro-go/service"
 	"github.com/jantytgat/citrixadc-backup/data"
 	"github.com/jantytgat/citrixadc-backup/models"
-	"github.com/spf13/viper"
 	"io/ioutil"
 	"log"
 	"net/url"
@@ -20,56 +19,51 @@ import (
 
 type BackupController struct{}
 type BackupControllerLauncher interface {
-	ExecuteRun()
+	Run(s models.BackupConfiguration)
+	runBackupCommands(t models.BackupTarget, s models.BackupSettings, wg *sync.WaitGroup)
+	createSystemBackup(nitroClient service.NitroClient, name string, level string) error
+	downloadSystemBackup(nitroClient service.NitroClient, name string) (string, error)
+	deleteSystemBackup(nitroClient service.NitroClient, name string) error
+	getTimestamp() string
+	generateFilename(timestamp string, target string, node string) string
+	createDirectory(path string) error
+	writeFileToDisk(filename string, targetName string, data string, settings models.BackupSettings) error
 }
 
-func (b *BackupController) ExecuteBackup() {
-	c, err := b.getBackupConfiguration()
+func (c *BackupController) Run(s models.BackupConfiguration) {
+	err := c.createDirectory(s.Settings.OutputBasePath)
 	if err != nil {
-		log.Fatal(err)
-	}
-
-	err = b.createDirectory(c.Settings.OutputBasePath)
-	if err != nil {
-		log.Fatal("Access denied to ", c.Settings.OutputBasePath)
+		log.Fatal("Access denied to ", s.Settings.OutputBasePath)
 	}
 
 	var wg sync.WaitGroup
-	for _, t := range c.Targets {
+	for _, t := range s.Targets {
 		wg.Add(1)
-		go b.runBackupCommands(t, c.Settings, &wg)
+		go c.runBackupCommands(t, s.Settings, &wg)
 	}
 	wg.Wait()
 }
 
-func (b *BackupController) getBackupConfiguration() (models.BackupConfiguration, error) {
-	var config models.BackupConfiguration
-	err := viper.Unmarshal(&config)
-
-	return config, err
-}
-
-func (b *BackupController) runBackupCommands(t models.BackupTarget, s models.BackupSettings, wg *sync.WaitGroup) {
-	var sharedController = SharedController{}
+func (c *BackupController) runBackupCommands(t models.BackupTarget, s models.BackupSettings, wg *sync.WaitGroup) {
 	var primaryNode models.BackupNode
 	var err error
 	var nitroClient = make(map[string]service.NitroClient, len(t.Nodes))
 
-	nitroClient, err = b.createNitroClientsForNodes(t)
+	nitroClient, err = createNitroClientsForNodes(t)
 	if err != nil {
 		log.Fatal("Error creating nitro clients")
 		wg.Done()
 		return
 	}
 
-	primaryNode, err = sharedController.GetPrimaryNode(nitroClient, t)
+	primaryNode, err = getPrimaryNode(nitroClient, t)
 	if err != nil {
 		wg.Done()
 		return
 	}
 
-	timestamp := b.getTimestamp()
-	err = b.createSystemBackup(nitroClient[primaryNode.Name], timestamp, t.Level)
+	timestamp := c.getTimestamp()
+	err = c.createSystemBackup(nitroClient[primaryNode.Name], timestamp, t.Level)
 	if err != nil {
 		wg.Done()
 		return
@@ -77,21 +71,21 @@ func (b *BackupController) runBackupCommands(t models.BackupTarget, s models.Bac
 
 	for _, n := range t.Nodes {
 		var f string
-		f, err = b.downloadSystemBackup(nitroClient[n.Name], timestamp+".tgz")
+		f, err = c.downloadSystemBackup(nitroClient[n.Name], timestamp+".tgz")
 		if err != nil {
 			fmt.Println(err)
 			wg.Done()
 			return
 		}
 
-		err = b.writeFileToDisk(b.generateFilename(timestamp, t.Name, n.Name), t.Name, f, s)
+		err = c.writeFileToDisk(c.generateFilename(timestamp, t.Name, n.Name), t.Name, f, s)
 		if err != nil {
 			fmt.Println(err)
 			wg.Done()
 			return
 		}
 
-		err = b.deleteSystemBackup(nitroClient[n.Name], timestamp+".tgz")
+		err = c.deleteSystemBackup(nitroClient[n.Name], timestamp+".tgz")
 		if err != nil {
 			wg.Done()
 			return
@@ -101,26 +95,42 @@ func (b *BackupController) runBackupCommands(t models.BackupTarget, s models.Bac
 	wg.Done()
 }
 
-func (b *BackupController) createNitroClientsForNodes(t models.BackupTarget) (map[string]service.NitroClient, error) {
-	nitroClient := make(map[string]service.NitroClient, len(t.Nodes))
-	var err error
-	for _, n := range t.Nodes {
-		client, err := service.NewNitroClientFromParams(
-			service.NitroParams{
-				Url:       n.Address,
-				Username:  t.Username,
-				Password:  t.Password,
-				SslVerify: t.ValidateCertificate,
-			})
-		if err != nil {
-			log.Fatal("Could not create client for target", t.Name, "node", n.Name)
-		}
-		nitroClient[n.Name] = *client
-	}
-	return nitroClient, err
+
+func (c *BackupController) createSystemBackup(nitroClient service.NitroClient, name string, level string) error {
+	// Filename must have no extension
+	name = strings.TrimSuffix(name, ".tgz")
+	request := data.GetSystemBackupCreateData(name, level)
+
+	err := nitroClient.ActOnResource(service.Systembackup.Type(), request, "create")
+	return err
 }
 
-func (b *BackupController) getTimestamp() string {
+func (c *BackupController) downloadSystemBackup(nitroClient service.NitroClient, name string) (string, error) {
+	var output string
+	params := service.FindParams{
+		ArgsMap:                  map[string]string{"fileLocation": url.PathEscape("/var/ns_sys_backup")},
+		ResourceType:             "systemfile",
+		ResourceName:             name,
+		ResourceMissingErrorCode: 0,
+	}
+
+	response, err := nitroClient.FindResourceArrayWithParams(params)
+	if err == nil {
+		if response[0]["filecontent"] != "" {
+			output = response[0]["filecontent"].(string)
+		} else {
+			output = ""
+		}
+	}
+	return output, err
+}
+
+func (c *BackupController) deleteSystemBackup(nitroClient service.NitroClient, name string) error {
+	err := nitroClient.DeleteResource(service.Systembackup.Type(), name)
+	return err
+}
+
+func (c *BackupController) getTimestamp() string {
 	t := time.Now()
 	return fmt.Sprintf("%d%02d%02d_%02d%02d%02d",
 		t.Year(),
@@ -132,36 +142,17 @@ func (b *BackupController) getTimestamp() string {
 	)
 }
 
-func (b *BackupController) createSystemBackup(c service.NitroClient, name string, level string) error {
-	// Filename must have no extension
-	name = strings.TrimSuffix(name, ".tgz")
-	request := data.GetSystemBackupCreateData(name, level)
+func (c *BackupController) generateFilename(timestamp string, target string, node string) string {
+	var output []string
 
-	err := c.ActOnResource(service.Systembackup.Type(), request, "create")
-	return err
+	output = append(output, timestamp)
+	output = append(output, target)
+	output = append(output, node+".tgz")
+
+	return strings.Join(output, "_")
 }
 
-func (b *BackupController) downloadSystemBackup(c service.NitroClient, name string) (string, error) {
-	var output string
-	params := service.FindParams{
-		ArgsMap:                  map[string]string{"fileLocation": url.PathEscape("/var/ns_sys_backup")},
-		ResourceType:             "systemfile",
-		ResourceName:             name,
-		ResourceMissingErrorCode: 0,
-	}
-
-	response, err := c.FindResourceArrayWithParams(params)
-	if err == nil {
-		if response[0]["filecontent"] != "" {
-			output = response[0]["filecontent"].(string)
-		} else {
-			output = ""
-		}
-	}
-	return output, err
-}
-
-func (b *BackupController) createDirectory(path string) error {
+func (c *BackupController) createDirectory(path string) error {
 	src, err := os.Stat(path)
 
 	if os.IsNotExist(err) {
@@ -173,11 +164,11 @@ func (b *BackupController) createDirectory(path string) error {
 	}
 }
 
-func (b *BackupController) writeFileToDisk(filename string, targetName string, data string, settings models.BackupSettings) error {
+func (c *BackupController) writeFileToDisk(filename string, targetName string, data string, settings models.BackupSettings) error {
 	var outputFile string
 
 	if settings.FolderPerTarget {
-		err := b.createDirectory(filepath.Join(settings.OutputBasePath, targetName))
+		err := c.createDirectory(filepath.Join(settings.OutputBasePath, targetName))
 		if err != nil {
 			return err
 		}
@@ -199,17 +190,4 @@ func (b *BackupController) writeFileToDisk(filename string, targetName string, d
 	return err
 }
 
-func (b *BackupController) generateFilename(timestamp string, target string, node string) string {
-	var output []string
 
-	output = append(output, timestamp)
-	output = append(output, target)
-	output = append(output, node+".tgz")
-
-	return strings.Join(output, "_")
-}
-
-func (b *BackupController) deleteSystemBackup(c service.NitroClient, name string) error {
-	err := c.DeleteResource(service.Systembackup.Type(), name)
-	return err
-}

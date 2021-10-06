@@ -1,5 +1,5 @@
 /*
-Copyright © 2021 NAME HERE <EMAIL ADDRESS>
+Copyright © 2021 Jan Tytgat
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ package cmd
 
 import (
 	"github.com/jantytgat/citrixadc-backup/controllers"
+	"log"
 
 	"github.com/spf13/cobra"
 )
@@ -37,8 +38,13 @@ to quickly create a Cobra application.`,
 }
 
 func runScheduler() {
-	s := controllers.ScheduleController{}
-	s.Run()
+	s, err := getBackupConfiguration()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	c := controllers.ScheduleController{}
+	c.Run(s, configFile)
 }
 
 func init() {
